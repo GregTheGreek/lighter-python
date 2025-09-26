@@ -8,6 +8,8 @@ import os
 import time
 from typing import Dict, Optional, Tuple
 
+from ledgerblue.comm import HIDDongleHIDAPI, getDongle
+from ledgereth.messages import sign_message
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from pydantic import StrictInt
@@ -271,7 +273,7 @@ class SignerClient:
 
         return private_key_str, public_key_str, error
 
-    def sign_change_api_key(self, eth_private_key, new_pubkey: str, nonce: int):
+    def sign_change_api_key(self, eth_private_key, new_pubkey: str, nonce: int, useLedger=False, hd_path=None):
         self.signer.SignChangePubKey.argtypes = [
             ctypes.c_char_p,
             ctypes.c_longlong,
@@ -289,12 +291,26 @@ class SignerClient:
         msg_to_sign = tx_info["MessageToSign"]
         del tx_info["MessageToSign"]
 
-        # sign the message
-        acct = Account.from_key(eth_private_key)
         message = encode_defunct(text=msg_to_sign)
-        signature = acct.sign_message(message)
-        tx_info["L1Sig"] = signature.signature.to_0x_hex()
+        # sign the message
+        if useLedger:
+            sig = self.sign_change_api_key_with_ledger(eth_private_key, new_pubkey, message, nonce, hd_path)
+        else:
+            acct = Account.from_key(eth_private_key)
+            signature = acct.sign_message(message)
+            tx_info["L1Sig"] = signature.signature.to_0x_hex()
         return json.dumps(tx_info), None
+
+
+    def sign_change_api_key_with_ledger(self, eth_private_key, new_pubkey: str, message: encode_defunct, nonce: int, hd_path):
+        try:
+            dongle = getDongle()
+        except Exception as e:
+            return None, str(e)
+        
+        # sign the message
+        signed_msg = sign_message(message, sender_path=hd_path.path.lstrip("m/"), dongle=dongle)
+        return signed_msg.v, signed_msg.r, signed_msg.s
 
     def get_api_key_nonce(self, api_key_index: int, nonce: int) -> Tuple[int, int]:
         if api_key_index != -1 and nonce != -1:
@@ -543,8 +559,8 @@ class SignerClient:
         error = result.err.decode("utf-8") if result.err else None
         return auth, error
 
-    async def change_api_key(self, eth_private_key: str, new_pubkey: str, nonce=-1):
-        tx_info, error = self.sign_change_api_key(eth_private_key, new_pubkey, nonce)
+    async def change_api_key(self, eth_private_key: str, new_pubkey: str, nonce=-1, useLedger=False):
+        tx_info, error = self.sign_change_api_key(eth_private_key, new_pubkey, nonce, useLedger)
         if error is not None:
             return None, error
 
